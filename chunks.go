@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"sync"
+	"time"
 )
+
+const outputDirectory = "biny_data2"
 
 func readNextChunk(file *os.File) *bytes.Buffer {
 	const HEADERSIZE = 4
@@ -22,95 +26,101 @@ func readNextChunk(file *os.File) *bytes.Buffer {
 	// seek size byte
 	m := make([]byte, size)
 	binary.Read(file, binary.LittleEndian, &m)
-	// fmt.Println("size", size)
 
 	// seek 4byte
 	n := make([]byte, FOOTERSIZE)
 	_, err := file.Read(n)
 	if err == io.EOF {
-		fmt.Println("End")
+		fmt.Println("ファイルの終端に達しました")
+		os.Exit(0)
+	} else if err != nil {
+		panic(err)
 	}
 	return bytes.NewBuffer(m)
 }
+
 func writeFieldData(g []float32, config simulationConfig, fname string, wg *sync.WaitGroup) {
 	fout, err := os.Create(fname)
 	if err != nil {
 		panic(err)
 	}
+	writer := bufio.NewWriter(fout)
 
 	index := 0
 	for z := int32(1); z <= config.OutputMeshNumber[2]; z++ {
 		for y := int32(1); y <= config.OutputMeshNumber[1]; y++ {
 			for x := int32(1); x <= config.OutputMeshNumber[0]; x++ {
-				fout.WriteString(fmt.Sprintln(x, y, z, g[index]))
+				writer.WriteString(fmt.Sprintln(x, y, z, g[index]))
 				index++
 			}
-			fout.WriteString("\n")
+			writer.WriteString("\n")
 		}
-		fout.WriteString("\n")
+		writer.WriteString("\n")
 	}
+	writer.Flush()
 	fout.Close()
 	wg.Done()
 }
 
 func loadWriteFieldData(file *os.File, config simulationConfig, fileID int, wg *sync.WaitGroup) {
-	var totalMeshNumber = config.MeshNumber[0] * config.MeshNumber[1] * config.MeshNumber[2]
-	//Ex
 	title := [...]string{"Ex", "Ey", "Ez", "Bx", "By", "Bz", "Jx", "Jy", "Jz"}
 	for _, v := range title {
 		fmt.Printf("loading... %s\n", v)
 		g := []float32{}
-		g = make([]float32, totalMeshNumber)
+		g = make([]float32, config.TotalOutputMeshNumber)
 		binary.Read(readNextChunk(file), binary.LittleEndian, &g)
 
 		wg.Add(1)
-		go writeFieldData(g[:], config, fmt.Sprintf("%s_%04d.txt", v, fileID), wg)
+		go writeFieldData(g[:], config, fmt.Sprintf("%s/%s_%04d.txt", outputDirectory, v, fileID), wg)
 	}
 }
 
-func loadSnap(file *os.File, config simulationConfig, fileID int) {
-	var time float32
-	wg := &sync.WaitGroup{}
+func loadWriteParticleMeshData(file *os.File, config simulationConfig, fileID int, wg *sync.WaitGroup) {
 
-	binary.Read(readNextChunk(file), binary.LittleEndian, &time)
-	fmt.Println("time", time)
-
-	loadWriteFieldData(file, config, fileID, wg)
 	title_particle := [...]string{"Ion_Density", "Ion_Energy", "Ion_EnergyFlux_x", "Ion_EnergyFlux_y"}
+	title_particle_Electron := [...]string{"Electron_Density", "Electron_Energy", "Electron_EnergyFlux_x", "Electron_EnergyFlux_y"}
 
 	for ionID := int32(1); ionID <= config.IonNumber; ionID++ {
 		for _, v := range title_particle {
-			fmt.Printf("read %s\n", v)
+			fmt.Printf("loading... %s\n", v)
 			g := []float32{}
-			g = make([]float32, config.TotalMeshNumber)
+			g = make([]float32, config.TotalOutputMeshNumber)
 			binary.Read(readNextChunk(file), binary.LittleEndian, &g)
-			// writeData(g[:], v)
+			wg.Add(1)
+			go writeFieldData(g[:], config, fmt.Sprintf("%s/%s%04d_is=%02d.txt", outputDirectory, v, fileID, ionID), wg)
 		}
 	}
 
-	title_particle_Electron := [...]string{"Electron_Density", "Electron_Energy", "Electron_EnergyFlux_x", "Electron_EnergyFlux_y"}
 	for ElectronID := int32(1); ElectronID <= config.ElectronNumber; ElectronID++ {
 		for _, v := range title_particle_Electron {
 			g := []float32{}
-			g = make([]float32, config.TotalMeshNumber)
-			fmt.Println(v)
+			g = make([]float32, config.TotalOutputMeshNumber)
+			fmt.Printf("loading... %s\n", v)
 			binary.Read(readNextChunk(file), binary.LittleEndian, &g)
-			// writeData(g[:], v)
+			wg.Add(1)
+			go writeFieldData(g[:], config, fmt.Sprintf("%s/%s%04d_is=%02d.txt", outputDirectory, v, fileID, ElectronID), wg)
 		}
 	}
+}
+func loadWritePhaseSpace(file *os.File, config simulationConfig, fileID int, wg *sync.WaitGroup) {
+	momentum_title := [...]string{"pxpy", "pypz", "pzpx"}
+	position_title := [...]string{"xpx", "xpy", "xpz", "ypx", "ypy", "ypz"}
+	velocity_title := [...]string{"pxpy", "pypz", "pzpx"}
+	position_velocity_title := [...]string{"xpx", "xpy", "xpz", "ypx", "ypy", "ypz"}
 	for i := int32(1); i <= config.TotalParticleSpecies; i++ {
 		var dltmomentum float32
 		momentumvsmomentum := []float32{}
 		momentumvsmomentum = make([]float32, config.MomentumMeshNumber*config.MomentumMeshNumber)
 		binary.Read(readNextChunk(file), binary.LittleEndian, &dltmomentum)
-		momentum_title := [...]string{"pxpy", "pypz", "pzpx"}
-		for _, v := range momentum_title {
-			fmt.Println(v)
+		// TODO:後で書き込みを実装
+		// for _, v := range momentum_title {
+		for i := int32(0); i < int32(len(momentum_title)); i++ {
 			binary.Read(readNextChunk(file), binary.LittleEndian, &momentumvsmomentum)
 		}
-		position_title := [...]string{"xpx", "xpy", "xpz", "ypx", "ypy", "ypz"}
-		for _, v := range position_title {
-			fmt.Println(v)
+
+		// TODO:後で書き込みを実装
+		// for _, v := range position_title {
+		for i := int32(0); i < int32(len(position_title)); i++ {
 			readNextChunk(file)
 		}
 
@@ -118,19 +128,20 @@ func loadSnap(file *os.File, config simulationConfig, fileID int) {
 		velocityvsvelocity := []float32{}
 		velocityvsvelocity = make([]float32, config.MomentumMeshNumber*config.MomentumMeshNumber)
 		binary.Read(readNextChunk(file), binary.LittleEndian, &dltvelocity)
-		velocity_title := [...]string{"pxpy", "pypz", "pzpx"}
-		for _, v := range velocity_title {
-			fmt.Println(v)
+		// TODO:後で書き込みを実装
+		// for _, v := range velocity_title {
+		for i := int32(0); i < int32(len(velocity_title)); i++ {
 			binary.Read(readNextChunk(file), binary.LittleEndian, &velocityvsvelocity)
 		}
-		position_velocity_title := [...]string{"xpx", "xpy", "xpz", "ypx", "ypy", "ypz"}
-		for _, v := range position_velocity_title {
-			fmt.Println(v)
+		// TODO:後で書き込みを実装
+		// for _, v := range position_velocity_title {
+		for i := int32(0); i < int32(len(position_velocity_title)); i++ {
 			readNextChunk(file)
 		}
 	}
+}
+func loadWriteEnergyDistribution(file *os.File, config simulationConfig, fileID int, wg *sync.WaitGroup) {
 	for i := int32(1); i <= config.TotalParticleSpecies; i++ {
-		fmt.Println("energy", i)
 		var averageChargeRate, averageEnergy, dltEnergy, Eimaxt float32
 		binary.Read(readNextChunk(file), binary.LittleEndian, &averageChargeRate)
 		binary.Read(readNextChunk(file), binary.LittleEndian, &averageEnergy)
@@ -144,7 +155,6 @@ func loadSnap(file *os.File, config simulationConfig, fileID int) {
 		readNextChunk(file)
 	}
 	for i := int32(1); i <= config.TotalParticleSpecies; i++ {
-		fmt.Println("energy", i)
 		readNextChunk(file)
 		readNextChunk(file)
 		readNextChunk(file)
@@ -158,7 +168,26 @@ func loadSnap(file *os.File, config simulationConfig, fileID int) {
 		readNextChunk(file)
 		readNextChunk(file)
 	}
+}
+
+func loadSnap(file *os.File, config simulationConfig, fileID int) {
+	var simulationTime float32
+	wg := &sync.WaitGroup{}
+	start := time.Now()
+
+	binary.Read(readNextChunk(file), binary.LittleEndian, &simulationTime)
+	fmt.Println("読み込んでいるシミュレーション上の規格化時間:", simulationTime)
+
+	loadWriteFieldData(file, config, fileID, wg)
+	loadWriteParticleMeshData(file, config, fileID, wg)
+	loadWritePhaseSpace(file, config, fileID, wg)
+	loadWriteEnergyDistribution(file, config, fileID, wg)
+	fmt.Println("書き込み中...")
 	wg.Wait()
+
+	end := time.Now()
+	fmt.Println("経過時間:", end.Sub(start))
+	fmt.Println("")
 }
 
 type simulationConfig struct {
@@ -174,7 +203,7 @@ type simulationConfig struct {
 	FildBoundaryCondition      int32
 	TotalParticleNumber        int32
 	TotalParticleSpecies       int32
-	TotalMeshNumber            int32
+	TotalOutputMeshNumber      int32
 	IonNumber                  int32
 	ElectronNumber             int32
 	Loadtype                   []int32
@@ -198,9 +227,12 @@ type simulationConfig struct {
 	SpaceMeshNumberForMomentum [2]int32
 }
 
-func loadSetting() simulationConfig {
+func loadSetting() (simulationConfig, error) {
 	var config simulationConfig
-	file, _ := os.Open("gfin.dat")
+	file, err := os.Open("gfin.dat")
+	if err != nil {
+		return config, err
+	}
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.Version)
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.ParallelNumber)
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.Dimension)
@@ -238,25 +270,48 @@ func loadSetting() simulationConfig {
 	readNextChunk(file)
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.OutputMeshNumber)
 
-	config.TotalMeshNumber = config.MeshNumber[0] * config.MeshNumber[1] * config.MeshNumber[2]
-	return config
+	config.TotalOutputMeshNumber = config.OutputMeshNumber[0] * config.OutputMeshNumber[1] * config.OutputMeshNumber[2]
+	return config, nil
 }
+
+// 設定を表示する
 func showConfig(config simulationConfig) {
 	fmt.Printf("%+v\n", config)
-	// fmt.Printf("%-10s %v\n", "バージョン", config.Version)
-	// fmt.Printf("%-10s %v\n", "並列数", config.ParallelNumber)
-	// fmt.Printf("%-10s %v\n", "次元", config.Dimension)
 }
 
 func main() {
+	// outputDirectoryがあるか確認。なければディレクトリを作成する
+	if _, err := os.Stat(outputDirectory); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(outputDirectory, 0777); err != nil {
+				fmt.Println("biny_dataが作れませんでした")
+				fmt.Println(err)
+				os.Exit(-1)
+			}
+		}
+	}
+
+	// snapのバイナリを開く(とりあえずここではsnap0001.dat)
 	file, err := os.Open("snap0001.dat")
 	if err != nil {
-		fmt.Printf("error!")
+		fmt.Println("snap0001.datが読み込めません")
+		fmt.Println(err)
 		os.Exit(-1)
 	}
-	config := loadSetting()
+
+	// gfin.datを開き、シミュレーション設定を読み込む。
+	config, err := loadSetting()
+	if err != nil {
+		fmt.Println("gfin.datが読み込めません")
+		fmt.Println(err)
+		os.Exit(-1)
+	}
+
+	// 設定を表示する
 	showConfig(config)
-	for i := 0; i < 3; i++ {
+
+	// snapを終端に達するまで読み込む。
+	for i := 0; ; i++ {
 		loadSnap(file, config, i)
 	}
 }
