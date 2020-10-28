@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 )
 
 const outputDirectory = "biny_data2"
+const outputDirectoryVTK = "biny_dataVTK"
 const outputDirectoryAuthority = 0777
 
 type simulationConfig struct {
@@ -101,7 +103,37 @@ func readNextChunk(file *os.File) *bytes.Buffer {
 	}
 	return bytes.NewBuffer(m)
 }
+func writeFieldVTK(g []float32, fname string, arrayName string, config simulationConfig, wg *sync.WaitGroup) {
+	fout, err := os.Create(fname)
+	defer fout.Close()
+	if err != nil {
+		panic(err)
+	}
+	writer := bufio.NewWriter(fout)
+	writer.WriteString("<?xml version=\"1.0\"?>\n")
+	writer.WriteString("<VTKFile type=\"ImageData\" byte_order=\"LittleEndian\">")
+	writer.WriteString(fmt.Sprintf("<ImageData WholeExtent=\"0 %d 0 %d 0 %d\" Origin=\"0 0 0\" Spacing=\"1.0 1.0 1.0\">", config.OutputMeshNumber[0]-1, config.OutputMeshNumber[1]-1, config.OutputMeshNumber[2]-1))
+	writer.WriteString(fmt.Sprintf("<Piece Extent=\"0 %d 0 %d 0 %d\">", config.OutputMeshNumber[0]-1, config.OutputMeshNumber[1]-1, config.OutputMeshNumber[2]-1))
+	writer.WriteString(fmt.Sprintf("<PointData Scalars=\"%s\">", arrayName))
+	writer.WriteString(fmt.Sprintf("<DataArray Name=\"%s\" type=\"Float32\" format=\"binary\">", arrayName))
 
+	var dataSizeInByte int32
+	dataSizeInByte = config.TotalOutputMeshNumber * 4
+	var dataSizeInByte2Byte []byte
+	dataSizeBuffer := bytes.NewBuffer(dataSizeInByte2Byte)
+	binary.Write(dataSizeBuffer, binary.LittleEndian, dataSizeInByte)
+	writer.WriteString(base64.StdEncoding.EncodeToString(dataSizeInByte2Byte))
+
+	var a []byte
+	buf := bytes.NewBuffer(a)
+	binary.Write(buf, binary.LittleEndian, g)
+	writer.WriteString(base64.StdEncoding.EncodeToString(buf.Bytes()))
+
+	writer.WriteString("</DataArray></PointData></Piece></ImageData></VTKFile>")
+	writer.Flush()
+	fout.Close()
+	wg.Done()
+}
 func writeFieldData(g [][][]float32, mode string, fname string, wg *sync.WaitGroup) {
 	fout, err := os.Create(fname)
 	defer fout.Close()
@@ -109,6 +141,7 @@ func writeFieldData(g [][][]float32, mode string, fname string, wg *sync.WaitGro
 		panic(err)
 	}
 	writer := bufio.NewWriter(fout)
+
 	xsize := len(g)
 	ysize := len(g[0])
 	zsize := len(g[0][0])
@@ -124,6 +157,7 @@ func writeFieldData(g [][][]float32, mode string, fname string, wg *sync.WaitGro
 			}
 			writer.WriteString(fmt.Sprintln(""))
 		}
+		break
 	case "xy":
 		for x := 0; x < xsize; x++ {
 			for y := 0; y < ysize; y++ {
@@ -152,16 +186,19 @@ func writeFieldData(g [][][]float32, mode string, fname string, wg *sync.WaitGro
 		for x := 0; x < xsize; x++ {
 			writer.WriteString(fmt.Sprintln(x, g[x][ysize/2][zsize/2]))
 		}
+		break
 	case "y":
 		for y := 0; y < ysize; y++ {
 			writer.WriteString(fmt.Sprintln(y, g[xsize/2][y][zsize/2]))
 		}
+		break
 	case "z":
 		for z := 0; z < zsize; z++ {
 			writer.WriteString(fmt.Sprintln(z, g[xsize/2][ysize/2][z]))
 		}
+		break
 	default:
-		fmt.Println("Warning:invalid mode")
+		fmt.Println("Warning:invalid mode:", mode)
 	}
 	writer.Flush()
 	fout.Close()
@@ -174,9 +211,11 @@ func loadWriteFieldData(file *os.File, config simulationConfig, fileID int, wg *
 		fmt.Printf("\r\033[K loading... %s", v)
 		g := []float32{}
 		g = make([]float32, config.TotalOutputMeshNumber)
-		binary.Read(readNextChunk(file), binary.LittleEndian, &g)
+		nextchunk := readNextChunk(file)
+		binary.Read(nextchunk, binary.LittleEndian, &g)
 		buf := slice1Dto3D(g, config.OutputMeshNumber[0], config.OutputMeshNumber[1], config.OutputMeshNumber[2])
-		wg.Add(7)
+		wg.Add(8)
+		go writeFieldVTK(g, fmt.Sprintf("%s/%s%04d.vti", outputDirectoryVTK, v, fileID), v, config, wg)
 		go writeFieldData(buf, "xyz", fmt.Sprintf("%s/%s_xyz_%04d.txt", outputDirectory, v, fileID), wg)
 		go writeFieldData(buf, "xy", fmt.Sprintf("%s/%s_xy_%04d.txt", outputDirectory, v, fileID), wg)
 		go writeFieldData(buf, "yz", fmt.Sprintf("%s/%s_yz_%04d.txt", outputDirectory, v, fileID), wg)
@@ -200,8 +239,9 @@ func loadWriteParticleMeshData(file *os.File, config simulationConfig, fileID in
 			binary.Read(readNextChunk(file), binary.LittleEndian, &g)
 			buf := slice1Dto3D(g, config.OutputMeshNumber[0], config.OutputMeshNumber[1], config.OutputMeshNumber[2])
 
-			wg.Add(7)
-			go writeFieldData(buf, "xyz", fmt.Sprintf("%s/%s_xyz_%04d_is=%02d.txt", outputDirectory, v, fileID), wg)
+			wg.Add(8)
+			go writeFieldVTK(g, fmt.Sprintf("%s/%s%04d_is=%02d.vti", outputDirectoryVTK, v, fileID, ionID), v, config, wg)
+			go writeFieldData(buf, "xyz", fmt.Sprintf("%s/%s_xyz_%04d_is=%02d.txt", outputDirectory, v, fileID, ionID), wg)
 			go writeFieldData(buf, "xy", fmt.Sprintf("%s/%s_xy_%04d_is=%02d.txt", outputDirectory, v, fileID, ionID), wg)
 			go writeFieldData(buf, "yz", fmt.Sprintf("%s/%s_yz_%04d_is=%02d.txt", outputDirectory, v, fileID, ionID), wg)
 			go writeFieldData(buf, "zx", fmt.Sprintf("%s/%s_zx_%04d_is=%02d.txt", outputDirectory, v, fileID, ionID), wg)
@@ -211,7 +251,7 @@ func loadWriteParticleMeshData(file *os.File, config simulationConfig, fileID in
 		}
 	}
 
-	for ElectronID := int32(1); ElectronID <= config.ElectronNumber; ElectronID++ {
+	for ElectronID := config.IonNumber + 1; ElectronID <= config.TotalParticleSpecies; ElectronID++ {
 		for _, v := range title_particle_Electron {
 			g := []float32{}
 			g = make([]float32, config.TotalOutputMeshNumber)
@@ -219,7 +259,8 @@ func loadWriteParticleMeshData(file *os.File, config simulationConfig, fileID in
 			binary.Read(readNextChunk(file), binary.LittleEndian, &g)
 			buf := slice1Dto3D(g, config.OutputMeshNumber[0], config.OutputMeshNumber[1], config.OutputMeshNumber[2])
 
-			wg.Add(7)
+			wg.Add(8)
+			go writeFieldVTK(g, fmt.Sprintf("%s/%s%04d_is=%02d.vti", outputDirectoryVTK, v, fileID, ElectronID), v, config, wg)
 			go writeFieldData(buf, "xyz", fmt.Sprintf("%s/%s_xyz_%04d_is=%02d.txt", outputDirectory, v, fileID, ElectronID), wg)
 			go writeFieldData(buf, "xy", fmt.Sprintf("%s/%s_xy_%04d_is=%02d.txt", outputDirectory, v, fileID, ElectronID), wg)
 			go writeFieldData(buf, "yz", fmt.Sprintf("%s/%s_yz_%04d_is=%02d.txt", outputDirectory, v, fileID, ElectronID), wg)
@@ -384,6 +425,16 @@ func main() {
 	if _, err := os.Stat(outputDirectory); err != nil {
 		if os.IsNotExist(err) {
 			if err := os.Mkdir(outputDirectory, outputDirectoryAuthority); err != nil {
+				fmt.Println("biny_dataが作れませんでした")
+				fmt.Println(err)
+				os.Exit(-1)
+			}
+		}
+	}
+	// outputDirectoryがあるか確認。なければディレクトリを作成する
+	if _, err := os.Stat(outputDirectoryVTK); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(outputDirectoryVTK, outputDirectoryAuthority); err != nil {
 				fmt.Println("biny_dataが作れませんでした")
 				fmt.Println(err)
 				os.Exit(-1)
