@@ -171,7 +171,7 @@ func writeFieldData(g [][][]float32, mode string, fname string, wg *sync.WaitGro
 func loadWriteFieldData(file *os.File, config simulationConfig, fileID int, wg *sync.WaitGroup) {
 	title := [...]string{"Ex", "Ey", "Ez", "Bx", "By", "Bz", "Jx", "Jy", "Jz"}
 	for _, v := range title {
-		fmt.Printf("\rloading... %s", v)
+		fmt.Printf("\r\033[K loading... %s", v)
 		g := []float32{}
 		g = make([]float32, config.TotalOutputMeshNumber)
 		binary.Read(readNextChunk(file), binary.LittleEndian, &g)
@@ -194,7 +194,7 @@ func loadWriteParticleMeshData(file *os.File, config simulationConfig, fileID in
 
 	for ionID := int32(1); ionID <= config.IonNumber; ionID++ {
 		for _, v := range title_particle {
-			fmt.Printf("\rloading... %s", v)
+			fmt.Printf("\r\033[K loading... %s", v)
 			g := []float32{}
 			g = make([]float32, config.TotalOutputMeshNumber)
 			binary.Read(readNextChunk(file), binary.LittleEndian, &g)
@@ -215,7 +215,7 @@ func loadWriteParticleMeshData(file *os.File, config simulationConfig, fileID in
 		for _, v := range title_particle_Electron {
 			g := []float32{}
 			g = make([]float32, config.TotalOutputMeshNumber)
-			fmt.Printf("\rloading... %s", v)
+			fmt.Printf("\r\033[K loading... %s", v)
 			binary.Read(readNextChunk(file), binary.LittleEndian, &g)
 			buf := slice1Dto3D(g, config.OutputMeshNumber[0], config.OutputMeshNumber[1], config.OutputMeshNumber[2])
 
@@ -316,7 +316,7 @@ func loadSnap(file *os.File, config simulationConfig, fileID int) bool {
 	loadWriteParticleMeshData(file, config, fileID, wg)
 	loadWritePhaseSpace(file, config, fileID, wg)
 	loadWriteEnergyDistribution(file, config, fileID, wg)
-	fmt.Printf("\r書き込み中...\n")
+	fmt.Printf("\r\033[K書き込み中...\n")
 	wg.Wait()
 
 	end := time.Now()
