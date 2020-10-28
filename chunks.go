@@ -316,9 +316,9 @@ func loadSnap(file *os.File, config simulationConfig, fileID int) bool {
 	loadWriteParticleMeshData(file, config, fileID, wg)
 	loadWritePhaseSpace(file, config, fileID, wg)
 	loadWriteEnergyDistribution(file, config, fileID, wg)
-	fmt.Printf("\r\033[K書き込み中...\n")
+	fmt.Printf("\r\033[K書き込み中...")
 	wg.Wait()
-
+	fmt.Printf("\r\033[K書き込み完了\n")
 	end := time.Now()
 	fmt.Println("経過時間:", end.Sub(start))
 	fmt.Println("")
