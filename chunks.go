@@ -33,10 +33,60 @@ type art struct {
 	OutputVTKDirectory   string
 	Field                []subart
 	Particle             []subart
+	Phase                []subart
+	EnergyDistribution   []subart
 }
 
 var plotConfig art
 
+type simulationParticleConfig struct {
+	N_p                            int32
+	Np                             int32
+	Nps                            int32
+	ParticleMass                   float64
+	ParticleCharge                 float64
+	ParticleTempretureFunction     int32
+	ParticleTempreture             float64
+	ParticleOutGoing               [3]bool
+	DensityFunctionType            string
+	Rns_b                          float64
+	LoadType                       int32
+	NxFunc                         int32
+	NyFunc                         int32
+	Nix                            [4]float32
+	Niy                            [4]float32
+	Rds                            float64
+	ClusterLoadingOption           int32
+	ClusterShape                   int32
+	NumberCluster                  int32
+	Xclr                           [2]float64
+	Yclr                           [2]float64
+	ClusterDistance                float64
+	LLDumping                      bool
+	Atom                           string
+	ParticleInitialChargeForIonize float64
+}
+type simulationLaserConfig struct {
+	RLw          float64
+	X0           float64
+	X1           float64
+	Y1           float64
+	RLx          float64
+	RLy          float64
+	E0           float64
+	A0_0         float64
+	Tau0         float64
+	T_0          float64
+	Lambda       float64
+	Dy0          float64
+	LaserFocus   bool
+	FocusLength  float64
+	ExternalCrnt float64
+	EStc         [3]float64
+	IsLaserRise  bool
+	Polarize     string
+	Direction    int32
+}
 type simulationConfig struct {
 	Version                    string
 	ParallelNumber             int32
@@ -75,6 +125,8 @@ type simulationConfig struct {
 	SpaceMeshNumberForMomentum [2]int32
 	IonStep                    int32
 	IntSnap                    int32
+	Particle                   []simulationParticleConfig
+	Laser                      simulationLaserConfig
 }
 
 func writeFieldData(g [][][]float32, mode string, fname string, wg *sync.WaitGroup) {
@@ -215,7 +267,7 @@ func readNextChunk(file *os.File) *bytes.Buffer {
 	// seek size byte
 	m := make([]byte, size)
 	binary.Read(file, binary.LittleEndian, &m)
-
+	// fmt.Println(size)
 	// seek 4byte
 	n := make([]byte, FOOTERSIZE)
 	_, err := file.Read(n)
@@ -348,40 +400,107 @@ func loadWriteParticleMeshData(file *os.File, config simulationConfig, fileID in
 		}
 	}
 }
+func writePhaseSpace(xdata []float32, ydata []float32, vdata [][]float32, fname string, wg *sync.WaitGroup) {
+	fout, err := os.Create(fname)
+	defer fout.Close()
+	if err != nil {
+		panic(err)
+	}
+	writer := bufio.NewWriter(fout)
+	for xindex, x := range xdata {
+		for yindex, y := range ydata {
+			writer.WriteString(fmt.Sprintln(x, y, vdata[xindex][yindex]))
+		}
+		writer.WriteString(fmt.Sprintf("\n"))
+	}
+	writer.Flush()
+	wg.Done()
+}
+func slice1Dto2D(g []float32, xsize int32, ysize int32) [][]float32 {
+	var g2D [][]float32
+	g2D = make([][]float32, xsize)
+	for x := int32(0); x < xsize; x++ {
+		g2D[x] = make([]float32, ysize)
+	}
+	index := 0
+	for y := int32(0); y < ysize; y++ {
+		for x := int32(0); x < xsize; x++ {
+			g2D[x][y] = g[index]
+			index++
+		}
+	}
+	return g2D
+}
+func transpy(yp []float32, Ny_d int, parallelNumber int, momentumMeshNumber int) [][]float32 {
+	var res [][]float32 = make([][]float32, Ny_d)
+	for y := 0; y < Ny_d; y++ {
+		res[y] = make([]float32, len(yp)/int(Ny_d))
+	}
 
+	Ny_d_pe := Ny_d / parallelNumber
+	fmt.Println(Ny_d, Ny_d_pe)
+
+	for ypindex, v := range yp {
+		mype := ypindex / (Ny_d_pe * momentumMeshNumber)
+		ipe := ypindex - mype*Ny_d_pe*momentumMeshNumber
+		kp := (ipe) / Ny_d_pe
+		ky_pe := (ipe) % (Ny_d_pe)
+		kynew := Ny_d_pe*mype + ky_pe
+		// if kynew < 0 || kynew >= Ny_d || kp < 0 || kp >= momentumMeshNumber {
+		// 	fmt.Println(mype, ipe, kp, ky_pe, kynew)
+		//
+		// }
+		res[kynew][kp] = v
+	}
+	return res
+}
 func loadWritePhaseSpace(file *os.File, config simulationConfig, fileID int, wg *sync.WaitGroup) {
 	momentum_title := [...]string{"pxpy", "pypz", "pzpx"}
 	position_title := [...]string{"xpx", "xpy", "xpz", "ypx", "ypy", "ypz"}
-	velocity_title := [...]string{"pxpy", "pypz", "pzpx"}
-	position_velocity_title := [...]string{"xpx", "xpy", "xpz", "ypx", "ypy", "ypz"}
-	for i := int32(1); i <= config.TotalParticleSpecies; i++ {
+	velocity_title := [...]string{"vxvy", "vyvz", "vzvx"}
+	position_velocity_title := [...]string{"xvx", "xvy", "xvz", "yvx", "yvy", "yvz"}
+
+	for iparticle := int32(1); iparticle <= config.TotalParticleSpecies; iparticle++ {
 		var dltmomentum float32
 		momentumvsmomentum := []float32{}
 		momentumvsmomentum = make([]float32, config.MomentumMeshNumber*config.MomentumMeshNumber)
 		binary.Read(readNextChunk(file), binary.LittleEndian, &dltmomentum)
-		// TODO:後で書き込みを実装
-		// for _, v := range momentum_title {
-		for i := int32(0); i < int32(len(momentum_title)); i++ {
-			binary.Read(readNextChunk(file), binary.LittleEndian, &momentumvsmomentum)
+		momentum := make([]float32, config.MomentumMeshNumber)
+		fmt.Println("dltmomentum", dltmomentum)
+		for i, _ := range momentum {
+			momentum[i] = float32(dltmomentum) * (float32(int32(i)-config.MomentumMeshNumber/2) - 0.5) / float32(config.Particle[iparticle-1].ParticleMass*config.VelocityLight)
 		}
 
-		// TODO:後で書き込みを実装
-		// for _, v := range position_title {
-		for i := int32(0); i < int32(len(position_title)); i++ {
+		for _, v := range momentum_title {
+			binary.Read(readNextChunk(file), binary.LittleEndian, &momentumvsmomentum)
+
+			wg.Add(1)
+			go writePhaseSpace(momentum, momentum, slice1Dto2D(momentumvsmomentum, config.MomentumMeshNumber, config.MomentumMeshNumber),
+				fmt.Sprintf("%s/%s%04d_is=%02d.txt", plotConfig.OutputASCIIDirectory, v, fileID, iparticle), wg)
+		}
+
+		for titlei, v := range position_title {
+			positionvsmomentum := make([]float32, config.OutputMeshNumber[titlei/3]*config.MomentumMeshNumber)
+			binary.Read(readNextChunk(file), binary.LittleEndian, &positionvsmomentum)
+			position := make([]float32, config.OutputMeshNumber[titlei/3])
+			for iposition := int32(0); iposition < config.OutputMeshNumber[titlei/3]; iposition++ {
+				position[iposition] = float32(iposition)
+			}
+			wg.Add(1)
+			var buf [][]float32
+			if titlei/3 == 1 {
+				buf = transpy(positionvsmomentum, int(config.OutputMeshNumber[1]), int(config.ParallelNumber), int(config.MomentumMeshNumber))
+			} else {
+				buf = slice1Dto2D(positionvsmomentum, config.OutputMeshNumber[titlei/3], config.MomentumMeshNumber)
+			}
+			go writePhaseSpace(position, momentum, buf,
+				fmt.Sprintf("%s/%s%04d_is=%02d.txt", plotConfig.OutputASCIIDirectory, v, fileID, iparticle), wg)
+		}
+
+		readNextChunk(file)
+		for i := int32(0); i < int32(len(velocity_title)); i++ {
 			readNextChunk(file)
 		}
-
-		var dltvelocity float32
-		velocityvsvelocity := []float32{}
-		velocityvsvelocity = make([]float32, config.MomentumMeshNumber*config.MomentumMeshNumber)
-		binary.Read(readNextChunk(file), binary.LittleEndian, &dltvelocity)
-		// TODO:後で書き込みを実装
-		// for _, v := range velocity_title {
-		for i := int32(0); i < int32(len(velocity_title)); i++ {
-			binary.Read(readNextChunk(file), binary.LittleEndian, &velocityvsvelocity)
-		}
-		// TODO:後で書き込みを実装
-		// for _, v := range position_velocity_title {
 		for i := int32(0); i < int32(len(position_velocity_title)); i++ {
 			readNextChunk(file)
 		}
@@ -462,11 +581,12 @@ func loadSetting() (simulationConfig, error) {
 	if err != nil {
 		return config, err
 	}
-	binary.Read(readNextChunk(file), binary.LittleEndian, &config.Version)
+	buf := readNextChunk(file)
+	config.Version = strings.TrimSpace(fmt.Sprintf("%s", buf.Bytes()))
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.ParallelNumber)
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.Dimension)
 
-	var buf = readNextChunk(file)
+	buf = readNextChunk(file)
 	binary.Read(buf, binary.LittleEndian, &config.VelocityLight)
 	binary.Read(buf, binary.LittleEndian, &config.DeltTime)
 	binary.Read(buf, binary.LittleEndian, &config.DeltX)
@@ -509,7 +629,105 @@ func loadSetting() (simulationConfig, error) {
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.RealLx)
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.IntSnap)
 	binary.Read(readNextChunk(file), binary.LittleEndian, &config.OutputMeshNumber)
+	buf = readNextChunk(file)
+	binary.Read(buf, binary.LittleEndian, &config.MomentumMeshNumber)
+	binary.Read(buf, binary.LittleEndian, &config.SpaceMeshNumberForMomentum)
+	config.Particle = make([]simulationParticleConfig, config.TotalParticleSpecies)
+	for ionID := int32(0); ionID < config.IonNumber; ionID++ {
+		fmt.Println(ionID, config.IonNumber)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].LoadType)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].N_p)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].Np)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].Nps)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ParticleMass)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ParticleCharge)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ParticleTempretureFunction)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ParticleTempreture)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].Rns_b)
 
+		if config.Particle[ionID].LoadType == 0 {
+			bufstr := make([]byte, 4)
+			binary.Read(readNextChunk(file), binary.LittleEndian, &bufstr)
+			config.Particle[ionID].DensityFunctionType = strings.TrimSpace(fmt.Sprintf("%s", bufstr))
+			if config.Particle[ionID].DensityFunctionType == "x" {
+				binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].NxFunc)
+				binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].Nix)
+			} else if config.Particle[ionID].DensityFunctionType == "y" {
+				binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].NyFunc)
+				binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].Niy)
+			}
+		} else if config.Particle[ionID].LoadType == 1 {
+			binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].Rds)
+			binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ClusterLoadingOption)
+			binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ClusterShape)
+			binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].NumberCluster)
+			buf := readNextChunk(file)
+			binary.Read(buf, binary.LittleEndian, &config.Particle[ionID].Xclr)
+			binary.Read(buf, binary.LittleEndian, &config.Particle[ionID].Yclr)
+
+			binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ClusterDistance)
+		}
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].LLDumping)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ParticleOutGoing[0])
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ParticleOutGoing[1])
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ParticleOutGoing[2])
+		if config.UsedIonize {
+			binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].Atom)
+			binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[ionID].ParticleInitialChargeForIonize)
+
+		}
+	}
+	for electronID := config.IonNumber; electronID < config.TotalParticleSpecies; electronID++ {
+		fmt.Println(electronID)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].N_p)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].Np)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].Nps)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].ParticleMass)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].ParticleCharge)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].ParticleTempretureFunction)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].ParticleTempreture)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].Rns_b)
+
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].LLDumping)
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].ParticleOutGoing[0])
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].ParticleOutGoing[1])
+		binary.Read(readNextChunk(file), binary.LittleEndian, &config.Particle[electronID].ParticleOutGoing[2])
+	}
+	readNextChunk(file)
+	buf = readNextChunk(file)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.RLw)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.X0)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.X1)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.Y1)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.RLx)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.RLy)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.E0)
+
+	buf = readNextChunk(file)
+	var bufBool []byte
+	bufBool = make([]byte, 4)
+	binary.Read(buf, binary.LittleEndian, &bufBool)
+	fmt.Println(bufBool)
+	binary.Read(bytes.NewReader(bufBool), binary.LittleEndian, &config.Laser.IsLaserRise)
+	var bufstr []byte = make([]byte, 4)
+	binary.Read(buf, binary.LittleEndian, &bufstr)
+	config.Laser.Polarize = strings.TrimSpace(fmt.Sprintf("%s", bufstr))
+	binary.Read(buf, binary.LittleEndian, &config.Laser.Direction)
+
+	buf = readNextChunk(file)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.A0_0)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.Tau0)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.T_0)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.Lambda)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.Dy0)
+
+	buf = readNextChunk(file)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.LaserFocus)
+	binary.Read(buf, binary.LittleEndian, &config.Laser.FocusLength)
+	binary.Read(readNextChunk(file), binary.LittleEndian, &config.Laser.ExternalCrnt)
+
+	buf = readNextChunk(file)
+	// binary.Read(buf, binary.LittleEndian, &config.Laser.EStc)
 	config.TotalOutputMeshNumber = config.OutputMeshNumber[0] * config.OutputMeshNumber[1] * config.OutputMeshNumber[2]
 	return config, nil
 }
@@ -524,6 +742,11 @@ func showPlotConfig(config art) {
 	fmt.Printf("出力先のディレクトリ(VTKファイル))     : %s\n", config.OutputVTKDirectory)
 	fmt.Println("出力するデータ")
 	for _, v := range config.Field {
+		if v.Plot {
+			fmt.Printf("%s : %s\n", v.Name, strings.Replace(v.Center, " ", ", ", -1))
+		}
+	}
+	for _, v := range config.Particle {
 		if v.Plot {
 			fmt.Printf("%s : %s\n", v.Name, strings.Replace(v.Center, " ", ", ", -1))
 		}
@@ -605,6 +828,14 @@ func main() {
 			}
 		}
 	}
+	// gfin.datを開き、シミュレーション設定を読み込む。
+	config, err := loadSetting()
+	if err != nil {
+		fmt.Println("gfin.datが読み込めません")
+		fmt.Println(err)
+		os.Exit(-1)
+	}
+	showConfig(config)
 
 	// snapのバイナリを開く(とりあえずここではsnap0001.dat)
 	file, err := os.Open("snap0001.dat")
@@ -614,18 +845,9 @@ func main() {
 		os.Exit(-1)
 	}
 
-	// gfin.datを開き、シミュレーション設定を読み込む。
-	config, err := loadSetting()
-	if err != nil {
-		fmt.Println("gfin.datが読み込めません")
-		fmt.Println(err)
-		os.Exit(-1)
-	}
-
 	// 設定を表示する
 	fmt.Println("")
 	fmt.Println("シミュレーションの設定")
-	showConfig(config)
 	calculateNormalizeConstant(config)
 
 	// snapを終端に達するまで読み込む。
