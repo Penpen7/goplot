@@ -109,6 +109,18 @@ func WriteFieldData(g [][][]float32, mode string, fname string, wg *sync.WaitGro
 				averagieze(5), averagieze(6), averagieze(7)))
 		}
 		break
+	case "whole_average":
+    sum := float32(0)
+    for x := 0; x < xsize; x++{
+      for y:= 0; y < ysize; y++ {
+        for z:=0; z < zsize; z++ {
+          sum += g[x][y][z]
+        }
+      }
+    }
+    average := float32(sum) / float32(xsize * ysize * zsize)
+    writer.WriteString(fmt.Sprintln(average))
+    break
 	default:
 		fmt.Println("Warning:invalid mode:", mode)
 	}
